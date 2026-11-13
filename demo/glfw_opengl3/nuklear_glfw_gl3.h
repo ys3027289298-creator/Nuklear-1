@@ -13,6 +13,12 @@
 #ifndef NK_GLFW_GL3_H_
 #define NK_GLFW_GL3_H_
 
+/* Pull in nuklear only when the caller has not already done so. The
+ * single-header's NK_IMPLEMENTATION section sits outside its include guard,
+ * so including it a second time would compile all definitions twice. */
+#ifndef NK_NUKLEAR_H_
+#include <nuklear.h>
+#endif
 #include <GLFW/glfw3.h>
 
 enum nk_glfw_init_state{
@@ -58,6 +64,7 @@ struct nk_glfw {
 };
 
 NK_API struct nk_context*   nk_glfw3_init(struct nk_glfw* glfw, GLFWwindow *win, enum nk_glfw_init_state);
+NK_API struct nk_context*   nk_glfw3_init_fixed(struct nk_glfw* glfw, GLFWwindow *win, enum nk_glfw_init_state, void *memory, nk_size size);
 NK_API void                 nk_glfw3_shutdown(struct nk_glfw* glfw);
 NK_API void                 nk_glfw3_font_stash_begin(struct nk_glfw* glfw, struct nk_font_atlas **atlas);
 NK_API void                 nk_glfw3_font_stash_end(struct nk_glfw* glfw);
@@ -99,6 +106,8 @@ struct nk_glfw_vertex {
 };
 
 #ifdef __APPLE__
+  #define NK_SHADER_VERSION "#version 150\n"
+#elif defined(NK_GLFW_DESKTOP_GL)
   #define NK_SHADER_VERSION "#version 150\n"
 #else
   #define NK_SHADER_VERSION "#version 300 es\n"
@@ -450,6 +459,12 @@ nk_glfw3_clipboard_copy(nk_handle usr, const char *text, int len)
 NK_API struct nk_context*
 nk_glfw3_init(struct nk_glfw* glfw, GLFWwindow *win, enum nk_glfw_init_state init_state)
 {
+    return nk_glfw3_init_fixed(glfw, win, init_state, 0, 0);
+}
+
+NK_API struct nk_context*
+nk_glfw3_init_fixed(struct nk_glfw* glfw, GLFWwindow *win, enum nk_glfw_init_state init_state, void *memory, nk_size size)
+{
     glfwSetWindowUserPointer(win, glfw);
     glfw->win = win;
     if (init_state == NK_GLFW3_INSTALL_CALLBACKS) {
@@ -458,7 +473,10 @@ nk_glfw3_init(struct nk_glfw* glfw, GLFWwindow *win, enum nk_glfw_init_state ini
         glfwSetKeyCallback(win, nk_glfw3_key_callback);
         glfwSetMouseButtonCallback(win, nk_glfw3_mouse_button_callback);
     }
-    nk_init_default(&glfw->ctx, 0);
+    if (memory && size > 0)
+        nk_init_fixed(&glfw->ctx, memory, size, 0);
+    else
+        nk_init_default(&glfw->ctx, 0);
     glfw->ctx.clip.copy = nk_glfw3_clipboard_copy;
     glfw->ctx.clip.paste = nk_glfw3_clipboard_paste;
     glfw->ctx.clip.userdata = nk_handle_ptr(&glfw);

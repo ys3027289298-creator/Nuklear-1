@@ -1,0 +1,6 @@
+file 'seg1_initial_layout.mp4'
+file 'seg2_left_splitter.mp4'
+file 'seg3_drag_out_floating.mp4'
+file 'seg4_redock_right_edge.mp4'
+file 'seg5_move_floating.mp4'
+file 'seg6_right_splitter_query.mp4'
