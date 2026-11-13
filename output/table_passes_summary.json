@@ -1,0 +1,5 @@
+{
+  "passes": 5,
+  "worst_max_table_ms": 0.1757,
+  "mean_avg_table_ms": 0.0440
+}

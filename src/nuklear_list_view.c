@@ -10,6 +10,15 @@ NK_API nk_bool
 nk_list_view_begin(struct nk_context *ctx, struct nk_list_view *view,
     const char *title, nk_flags flags, int row_height, int row_count)
 {
+    return nk_list_view_begin_heights(ctx, view, title, flags,
+                                      0, row_height, row_count);
+}
+
+NK_API nk_bool
+nk_list_view_begin_heights(struct nk_context *ctx, struct nk_list_view *view,
+    const char *title, nk_flags flags, const int *row_heights,
+    int row_height, int row_count)
+{
     int title_len;
     nk_hash title_hash;
     nk_uint *x_offset;
@@ -56,10 +65,32 @@ nk_list_view_begin(struct nk_context *ctx, struct nk_list_view *view,
     win = ctx->current;
     layout = win->layout;
 
-    view->total_height = row_height * NK_MAX(row_count,1);
-    view->begin = (int)NK_MAX(((float)view->scroll_value / (float)row_height), 0.0f);
-    view->count = (int)NK_MAX(nk_iceilf((layout->clip.h)/(float)row_height),0);
-    view->count = NK_MIN(view->count, row_count - view->begin);
+    if (row_heights) {
+        /* variable row heights: walk the height table to locate the first
+         * visible row and to size the scrollable content range exactly */
+        int i;
+        int acc = 0;
+        int visible = (int)layout->clip.h;
+        view->begin = 0;
+        view->count = 0;
+        for (i = 0; i < row_count; ++i) {
+            int h = row_heights[i] + NK_MAX(0, (int)item_spacing.y);
+            if (acc + h <= (int)view->scroll_value)
+                view->begin = i + 1;
+            if (acc < (int)view->scroll_value + visible &&
+                acc + h > (int)view->scroll_value)
+                view->count++;
+            acc += h;
+        }
+        view->total_height = acc;
+        if (view->begin > row_count) view->begin = row_count;
+        view->count = NK_MIN(view->count, row_count - view->begin);
+    } else {
+        view->total_height = row_height * NK_MAX(row_count,1);
+        view->begin = (int)NK_MAX(((float)view->scroll_value / (float)row_height), 0.0f);
+        view->count = (int)NK_MAX(nk_iceilf((layout->clip.h)/(float)row_height),0);
+        view->count = NK_MIN(view->count, row_count - view->begin);
+    }
     view->end = view->begin + view->count;
     view->ctx = ctx;
     return result;
@@ -83,4 +114,3 @@ nk_list_view_end(struct nk_list_view *view)
     *view->scroll_pointer = *view->scroll_pointer + view->scroll_value;
     nk_group_end(view->ctx);
 }
-

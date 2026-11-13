@@ -3110,6 +3110,9 @@ struct nk_list_view {
     nk_uint scroll_value;
 };
 NK_API nk_bool nk_list_view_begin(struct nk_context*, struct nk_list_view *out, const char *id, nk_flags, int row_height, int row_count);
+/* variable row height variant: row_heights holds one pixel height per row and
+ * must stay valid for the whole frame; pass 0 to fall back to row_height */
+NK_API nk_bool nk_list_view_begin_heights(struct nk_context*, struct nk_list_view *out, const char *id, nk_flags, const int *row_heights, int row_height, int row_count);
 NK_API void nk_list_view_end(struct nk_list_view*);
 /* =============================================================================
  *

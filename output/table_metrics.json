@@ -1,0 +1,21 @@
+{
+  "window": {"w": 1000, "h": 720},
+  "panel":  {"x": 31.0, "y": 56.0, "w": 918.0, "h": 618.0},
+  "header": {"x": 31.0, "y": 60.0, "w": 908.0, "h": 30.0},
+  "body":   {"x": 35.0, "y": 98.0, "w": 900.0, "h": 26.0},
+  "body_content": {"w": 918.0, "h": 618.0},
+  "header_column_widths": [343, 140, 80, 329],
+  "body_column_widths": [334, 140, 80, 330],
+  "expected_variable_width": 334,
+  "content_height": 30182,
+  "expected_content_height": 30182,
+  "max_scroll_y": 29564,
+  "scroll_y": 0,
+  "visible_rows": 20,
+  "col_x": [31, 378, 522, 606, 939],
+  "body_col_x": [35, 373, 517, 601, 935],
+  "row_count": 1000,
+  "selected": 7,
+  "checks_passed": 8,
+  "checks_total": 8
+}
