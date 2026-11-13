@@ -3313,6 +3313,11 @@ NK_API nk_size nk_prog(struct nk_context*, nk_size cur, nk_size max, nk_bool mod
  * ============================================================================= */
 NK_API struct nk_colorf nk_color_picker(struct nk_context*, struct nk_colorf, enum nk_color_format);
 NK_API nk_bool nk_color_pick(struct nk_context*, struct nk_colorf*, enum nk_color_format);
+/* color picker with an embedded hexadecimal input field.
+ * hex_buffer must hold at least 7 bytes (NK_RGB) or 9 bytes (NK_RGBA),
+ * hex_len, hex_active and hex_edit are caller-owned state kept between frames.
+ * The widget allocates no heap memory while dragging or editing. */
+NK_API nk_bool nk_color_pick_hex(struct nk_context*, struct nk_colorf*, enum nk_color_format, char *hex_buffer, int hex_max, int *hex_len, nk_bool *hex_active, struct nk_text_edit *hex_edit);
 /* =============================================================================
  *
  *                                  PROPERTIES
