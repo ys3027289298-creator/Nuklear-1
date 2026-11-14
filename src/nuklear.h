@@ -23,6 +23,18 @@ extern "C" {
 #ifndef NK_INPUT_MAX
   #define NK_INPUT_MAX 16
 #endif
+#ifndef NK_IME_MAX_PREEDIT
+  #define NK_IME_MAX_PREEDIT 64
+#endif
+#ifndef NK_IME_MAX_COMMIT
+  #define NK_IME_MAX_COMMIT 128
+#endif
+#ifndef NK_IME_MAX_CANDIDATES
+  #define NK_IME_MAX_CANDIDATES 8
+#endif
+#ifndef NK_IME_MAX_CANDIDATE_LEN
+  #define NK_IME_MAX_CANDIDATE_LEN 32
+#endif
 #ifndef NK_MAX_NUMBER_BUFFER
   #define NK_MAX_NUMBER_BUFFER 64
 #endif
@@ -776,6 +788,151 @@ NK_API void nk_input_unicode(struct nk_context*, nk_rune);
  * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
  */
 NK_API void nk_input_end(struct nk_context*);
+
+/* ===============================================================
+ *
+ *                              IME
+ *
+ * ===============================================================
+ * Optional IME (input method editor) preedit/composition support for
+ * CJK text input. Disabled by default; while disabled nuklear behaves
+ * exactly as if this API did not exist.
+ *
+ * The platform backend feeds IME events between `nk_input_begin` and
+ * `nk_input_end` through the `nk_input_ime_*` functions. The active
+ * edit widget then renders the composition (preedit) string separately
+ * from the already committed text and applies commit/cancel events
+ * with correct undo, cursor and scrolling updates.
+ *
+ * All state is kept in fixed size buffers inside `nk_context`, so no
+ * runtime allocation takes place per frame.
+ */
+struct nk_ime_candidate {
+    int len; /* bytes used inside text */
+    char text[NK_IME_MAX_CANDIDATE_LEN];
+};
+struct nk_ime {
+    nk_bool enabled;        /* IME support was enabled by `nk_ime_enable` */
+    nk_bool composing;      /* a composition (preedit) string is currently shown */
+
+    /* composition (preedit) state, persists between frames */
+    char preedit[NK_IME_MAX_PREEDIT];
+    int preedit_len;        /* bytes used inside preedit */
+    int preedit_cursor;     /* byte offset of the composition cursor, rune aligned */
+    nk_bool preedit_dirty;  /* preedit was updated this frame */
+
+    /* bounded candidate list */
+    struct nk_ime_candidate candidates[NK_IME_MAX_CANDIDATES];
+    int candidate_count;
+    int candidate_selected;
+
+    /* one frame events, consumed by the active edit widget */
+    nk_bool commit_pending;
+    char commit[NK_IME_MAX_COMMIT];
+    int commit_len;
+    nk_bool cancel_pending;
+
+    /* absolute widget space position of the composition, updated every
+     * frame by the active edit widget; useful to place the platform
+     * candidate window. Zeroed while not composing. */
+    struct nk_rect cursor_rect;
+};
+/**
+ * \brief Enables or disables IME composition support.
+ *
+ * \details
+ * While disabled (the default) all `nk_input_ime_*` events are ignored
+ * and edit widgets behave exactly like before. Disabling clears any
+ * ongoing composition without modifying the text.
+ *
+ * ```c
+ * void nk_ime_enable(struct nk_context *ctx, nk_bool enable);
+ * ```
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ * \param[in] enable  | nk_true to enable IME composition support
+ */
+NK_API void nk_ime_enable(struct nk_context*, nk_bool enable);
+/**
+ * \brief Returns whether an IME composition string is currently active.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ */
+NK_API nk_bool nk_ime_is_composing(const struct nk_context*);
+/**
+ * \brief Returns the absolute position and size of the composition string
+ * inside the active edit widget, suitable for positioning the platform
+ * candidate window. Returns a zero rectangle while not composing.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ */
+NK_API struct nk_rect nk_ime_cursor_rect(const struct nk_context*);
+/**
+ * \brief Sets or updates the IME composition (preedit) string.
+ *
+ * \details
+ * The text is copied into a fixed size internal buffer and truncated at
+ * a UTF-8 rune boundary if it does not fit. Passing a length of 0 (or a
+ * null text) clears the current composition without touching the text
+ * of the edit widget. The cursor offset is clamped to a rune boundary.
+ *
+ * ```c
+ * void nk_input_ime_preedit(struct nk_context *ctx, const char *text, int len, int cursor);
+ * ```
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ * \param[in] text    | UTF-8 encoded composition string or 0 to clear
+ * \param[in] len     | Length of `text` in bytes
+ * \param[in] cursor  | Byte offset of the composition cursor inside `text`
+ */
+NK_API void nk_input_ime_preedit(struct nk_context*, const char *text, int len, int cursor);
+/**
+ * \brief Sets the IME candidate list for the current composition.
+ *
+ * \details
+ * The list is copied into fixed size internal storage; both the number
+ * of candidates (NK_IME_MAX_CANDIDATES) and the length of each
+ * candidate (NK_IME_MAX_CANDIDATE_LEN) are bounded and truncated at
+ * UTF-8 rune boundaries.
+ *
+ * \param[in] ctx         | Must point to a previously initialized `nk_context` struct
+ * \param[in] candidates  | Array of `count` zero terminated UTF-8 strings, or 0 to clear
+ * \param[in] count       | Number of entries inside `candidates`
+ * \param[in] selected    | Index of the currently highlighted candidate or -1
+ */
+NK_API void nk_input_ime_candidates(struct nk_context*, const char **candidates, int count, int selected);
+/**
+ * \brief Commits the given candidate of the current candidate list.
+ *
+ * \details
+ * Equivalent to `nk_input_ime_commit` with the candidate text. Does
+ * nothing if the index is out of range.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ * \param[in] index   | Index into the current candidate list
+ */
+NK_API void nk_input_ime_select_candidate(struct nk_context*, int index);
+/**
+ * \brief Queues an IME commit event replacing the current composition.
+ *
+ * \details
+ * The committed text is inserted into the active edit widget like
+ * regular typed text (respecting the edit filter and updating the undo
+ * stack, cursor and scrolling). The composition is cleared afterwards.
+ * If the text does not fit into the edit widget the composition is
+ * cleared and the edit text is left unchanged.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ * \param[in] text    | UTF-8 encoded text to commit
+ * \param[in] len     | Length of `text` in bytes
+ */
+NK_API void nk_input_ime_commit(struct nk_context*, const char *text, int len);
+/**
+ * \brief Cancels the current IME composition without modifying the text.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ */
+NK_API void nk_input_ime_cancel(struct nk_context*);
 
 /* =============================================================================
  *
@@ -5797,6 +5954,7 @@ struct nk_pool {
 struct nk_context {
 /* public: can be accessed freely */
     struct nk_input input;
+    struct nk_ime ime;
     struct nk_style style;
     struct nk_buffer memory;
     struct nk_clipboard clip;

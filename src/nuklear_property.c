@@ -278,7 +278,7 @@ nk_do_property(nk_flags *ws,
     text_edit->string.buffer.size = NK_MAX_NUMBER_BUFFER;
     text_edit->mode = NK_TEXT_EDIT_MODE_INSERT;
     nk_do_edit(ws, out, edit, (int)NK_EDIT_FIELD|(int)NK_EDIT_AUTO_SELECT,
-        filters[filter], text_edit, &style->edit, (*state == NK_PROPERTY_EDIT) ? in: 0, font);
+        filters[filter], text_edit, &style->edit, (*state == NK_PROPERTY_EDIT) ? in: 0, font, 0);
 
     *length = text_edit->string.len;
     *cursor = text_edit->cursor;
@@ -537,4 +537,3 @@ nk_propertyd(struct nk_context *ctx, const char *name, double min,
     val = variant.value.d;
     return val;
 }
-

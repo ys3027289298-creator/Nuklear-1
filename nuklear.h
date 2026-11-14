@@ -213,6 +213,18 @@ extern "C" {
 #ifndef NK_INPUT_MAX
   #define NK_INPUT_MAX 16
 #endif
+#ifndef NK_IME_MAX_PREEDIT
+  #define NK_IME_MAX_PREEDIT 64
+#endif
+#ifndef NK_IME_MAX_COMMIT
+  #define NK_IME_MAX_COMMIT 128
+#endif
+#ifndef NK_IME_MAX_CANDIDATES
+  #define NK_IME_MAX_CANDIDATES 8
+#endif
+#ifndef NK_IME_MAX_CANDIDATE_LEN
+  #define NK_IME_MAX_CANDIDATE_LEN 32
+#endif
 #ifndef NK_MAX_NUMBER_BUFFER
   #define NK_MAX_NUMBER_BUFFER 64
 #endif
@@ -966,6 +978,151 @@ NK_API void nk_input_unicode(struct nk_context*, nk_rune);
  * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
  */
 NK_API void nk_input_end(struct nk_context*);
+
+/* ===============================================================
+ *
+ *                              IME
+ *
+ * ===============================================================
+ * Optional IME (input method editor) preedit/composition support for
+ * CJK text input. Disabled by default; while disabled nuklear behaves
+ * exactly as if this API did not exist.
+ *
+ * The platform backend feeds IME events between `nk_input_begin` and
+ * `nk_input_end` through the `nk_input_ime_*` functions. The active
+ * edit widget then renders the composition (preedit) string separately
+ * from the already committed text and applies commit/cancel events
+ * with correct undo, cursor and scrolling updates.
+ *
+ * All state is kept in fixed size buffers inside `nk_context`, so no
+ * runtime allocation takes place per frame.
+ */
+struct nk_ime_candidate {
+    int len; /* bytes used inside text */
+    char text[NK_IME_MAX_CANDIDATE_LEN];
+};
+struct nk_ime {
+    nk_bool enabled;        /* IME support was enabled by `nk_ime_enable` */
+    nk_bool composing;      /* a composition (preedit) string is currently shown */
+
+    /* composition (preedit) state, persists between frames */
+    char preedit[NK_IME_MAX_PREEDIT];
+    int preedit_len;        /* bytes used inside preedit */
+    int preedit_cursor;     /* byte offset of the composition cursor, rune aligned */
+    nk_bool preedit_dirty;  /* preedit was updated this frame */
+
+    /* bounded candidate list */
+    struct nk_ime_candidate candidates[NK_IME_MAX_CANDIDATES];
+    int candidate_count;
+    int candidate_selected;
+
+    /* one frame events, consumed by the active edit widget */
+    nk_bool commit_pending;
+    char commit[NK_IME_MAX_COMMIT];
+    int commit_len;
+    nk_bool cancel_pending;
+
+    /* absolute widget space position of the composition, updated every
+     * frame by the active edit widget; useful to place the platform
+     * candidate window. Zeroed while not composing. */
+    struct nk_rect cursor_rect;
+};
+/**
+ * \brief Enables or disables IME composition support.
+ *
+ * \details
+ * While disabled (the default) all `nk_input_ime_*` events are ignored
+ * and edit widgets behave exactly like before. Disabling clears any
+ * ongoing composition without modifying the text.
+ *
+ * ```c
+ * void nk_ime_enable(struct nk_context *ctx, nk_bool enable);
+ * ```
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ * \param[in] enable  | nk_true to enable IME composition support
+ */
+NK_API void nk_ime_enable(struct nk_context*, nk_bool enable);
+/**
+ * \brief Returns whether an IME composition string is currently active.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ */
+NK_API nk_bool nk_ime_is_composing(const struct nk_context*);
+/**
+ * \brief Returns the absolute position and size of the composition string
+ * inside the active edit widget, suitable for positioning the platform
+ * candidate window. Returns a zero rectangle while not composing.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ */
+NK_API struct nk_rect nk_ime_cursor_rect(const struct nk_context*);
+/**
+ * \brief Sets or updates the IME composition (preedit) string.
+ *
+ * \details
+ * The text is copied into a fixed size internal buffer and truncated at
+ * a UTF-8 rune boundary if it does not fit. Passing a length of 0 (or a
+ * null text) clears the current composition without touching the text
+ * of the edit widget. The cursor offset is clamped to a rune boundary.
+ *
+ * ```c
+ * void nk_input_ime_preedit(struct nk_context *ctx, const char *text, int len, int cursor);
+ * ```
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ * \param[in] text    | UTF-8 encoded composition string or 0 to clear
+ * \param[in] len     | Length of `text` in bytes
+ * \param[in] cursor  | Byte offset of the composition cursor inside `text`
+ */
+NK_API void nk_input_ime_preedit(struct nk_context*, const char *text, int len, int cursor);
+/**
+ * \brief Sets the IME candidate list for the current composition.
+ *
+ * \details
+ * The list is copied into fixed size internal storage; both the number
+ * of candidates (NK_IME_MAX_CANDIDATES) and the length of each
+ * candidate (NK_IME_MAX_CANDIDATE_LEN) are bounded and truncated at
+ * UTF-8 rune boundaries.
+ *
+ * \param[in] ctx         | Must point to a previously initialized `nk_context` struct
+ * \param[in] candidates  | Array of `count` zero terminated UTF-8 strings, or 0 to clear
+ * \param[in] count       | Number of entries inside `candidates`
+ * \param[in] selected    | Index of the currently highlighted candidate or -1
+ */
+NK_API void nk_input_ime_candidates(struct nk_context*, const char **candidates, int count, int selected);
+/**
+ * \brief Commits the given candidate of the current candidate list.
+ *
+ * \details
+ * Equivalent to `nk_input_ime_commit` with the candidate text. Does
+ * nothing if the index is out of range.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ * \param[in] index   | Index into the current candidate list
+ */
+NK_API void nk_input_ime_select_candidate(struct nk_context*, int index);
+/**
+ * \brief Queues an IME commit event replacing the current composition.
+ *
+ * \details
+ * The committed text is inserted into the active edit widget like
+ * regular typed text (respecting the edit filter and updating the undo
+ * stack, cursor and scrolling). The composition is cleared afterwards.
+ * If the text does not fit into the edit widget the composition is
+ * cleared and the edit text is left unchanged.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ * \param[in] text    | UTF-8 encoded text to commit
+ * \param[in] len     | Length of `text` in bytes
+ */
+NK_API void nk_input_ime_commit(struct nk_context*, const char *text, int len);
+/**
+ * \brief Cancels the current IME composition without modifying the text.
+ *
+ * \param[in] ctx     | Must point to a previously initialized `nk_context` struct
+ */
+NK_API void nk_input_ime_cancel(struct nk_context*);
 
 /* =============================================================================
  *
@@ -5987,6 +6144,7 @@ struct nk_pool {
 struct nk_context {
 /* public: can be accessed freely */
     struct nk_input input;
+    struct nk_ime ime;
     struct nk_style style;
     struct nk_buffer memory;
     struct nk_clipboard clip;
@@ -6422,7 +6580,11 @@ NK_LIB nk_bool nk_do_selectable_image(nk_flags *state, struct nk_command_buffer 
 
 /* edit */
 NK_LIB void nk_edit_draw_text(struct nk_command_buffer *out, const struct nk_style_edit *style, float pos_x, float pos_y, float x_offset, const char *text, int byte_len, float row_height, const struct nk_user_font *font, struct nk_color background, struct nk_color foreground, nk_bool is_selected);
-NK_LIB nk_flags nk_do_edit(nk_flags *state, struct nk_command_buffer *out, struct nk_rect bounds, nk_flags flags, nk_plugin_filter filter, struct nk_text_edit *edit, const struct nk_style_edit *style, struct nk_input *in, const struct nk_user_font *font);
+NK_LIB nk_flags nk_do_edit(nk_flags *state, struct nk_command_buffer *out, struct nk_rect bounds, nk_flags flags, nk_plugin_filter filter, struct nk_text_edit *edit, const struct nk_style_edit *style, struct nk_input *in, const struct nk_user_font *font, struct nk_ime *ime);
+
+/* ime */
+NK_LIB void nk_ime_clear_composition(struct nk_ime *ime);
+NK_LIB int nk_ime_truncate_utf8(const char *text, int len, int max);
 
 /* color-picker */
 NK_LIB nk_bool nk_color_picker_behavior(nk_flags *state, const struct nk_rect *bounds, const struct nk_rect *matrix, const struct nk_rect *hue_bar, const struct nk_rect *alpha_bar, struct nk_colorf *color, const struct nk_input *in);
@@ -18305,6 +18467,15 @@ nk_input_begin(struct nk_context *ctx)
     in->mouse.delta.y = 0;
     for (i = 0; i < NK_KEY_MAX; i++)
         in->keyboard.keys[i].clicked = 0;
+
+    /* IME events live for a single frame: events queued after this call
+     * are consumed by the active edit widget during the widget pass and
+     * stale events are dropped here at the beginning of the next frame.
+     * The composition (preedit) string itself persists between frames. */
+    ctx->ime.commit_pending = nk_false;
+    ctx->ime.commit_len = 0;
+    ctx->ime.cancel_pending = nk_false;
+    ctx->ime.preedit_dirty = nk_false;
 }
 NK_API void
 nk_input_end(struct nk_context *ctx)
@@ -18701,6 +18872,179 @@ nk_input_is_key_down(const struct nk_input *i, enum nk_keys key)
     return nk_false;
 }
 
+/* ===============================================================
+ *
+ *                              IME
+ *
+ * ===============================================================*/
+NK_LIB int
+nk_ime_truncate_utf8(const char *text, int len, int max)
+{
+    int lead;
+    int need;
+    unsigned char c;
+
+    /* clamp len to [0, max] without splitting a UTF-8 rune */
+    if (!text || len <= 0 || max <= 0) return 0;
+    len = NK_MIN(len, max);
+
+    /* find the lead byte of the trailing rune */
+    lead = len - 1;
+    while (lead > 0 && ((unsigned char)text[lead] & 0xC0) == 0x80)
+        lead--;
+
+    /* expected rune length from the lead byte */
+    c = (unsigned char)text[lead];
+    if (c < 0x80) need = 1;
+    else if ((c & 0xE0) == 0xC0) need = 2;
+    else if ((c & 0xF0) == 0xE0) need = 3;
+    else if ((c & 0xF8) == 0xF0) need = 4;
+    else need = 1; /* invalid lead byte: treat as a single byte */
+
+    /* drop the trailing rune if it is incomplete */
+    if (lead + need > len)
+        len = lead;
+    return len;
+}
+NK_LIB void
+nk_ime_clear_composition(struct nk_ime *ime)
+{
+    NK_ASSERT(ime);
+    if (!ime) return;
+    ime->composing = nk_false;
+    ime->preedit_len = 0;
+    ime->preedit_cursor = 0;
+    ime->preedit_dirty = nk_false;
+    ime->candidate_count = 0;
+    ime->candidate_selected = -1;
+    ime->cursor_rect = nk_rect(0,0,0,0);
+}
+NK_API void
+nk_ime_enable(struct nk_context *ctx, nk_bool enable)
+{
+    NK_ASSERT(ctx);
+    if (!ctx) return;
+    ctx->ime.enabled = enable;
+    if (!enable) {
+        nk_ime_clear_composition(&ctx->ime);
+        ctx->ime.commit_pending = nk_false;
+        ctx->ime.commit_len = 0;
+        ctx->ime.cancel_pending = nk_false;
+    }
+}
+NK_API nk_bool
+nk_ime_is_composing(const struct nk_context *ctx)
+{
+    NK_ASSERT(ctx);
+    if (!ctx) return nk_false;
+    return (nk_bool)(ctx->ime.enabled && ctx->ime.composing);
+}
+NK_API struct nk_rect
+nk_ime_cursor_rect(const struct nk_context *ctx)
+{
+    NK_ASSERT(ctx);
+    if (!ctx || !ctx->ime.enabled || !ctx->ime.composing)
+        return nk_rect(0,0,0,0);
+    return ctx->ime.cursor_rect;
+}
+NK_API void
+nk_input_ime_preedit(struct nk_context *ctx, const char *text, int len, int cursor)
+{
+    struct nk_ime *ime;
+    NK_ASSERT(ctx);
+    if (!ctx) return;
+    ime = &ctx->ime;
+    if (!ime->enabled) return;
+
+    ime->preedit_len = nk_ime_truncate_utf8(text, len, NK_IME_MAX_PREEDIT - 1);
+    if (ime->preedit_len)
+        NK_MEMCPY(ime->preedit, text, (nk_size)ime->preedit_len);
+    ime->preedit[ime->preedit_len] = '\0';
+
+    /* clamp the composition cursor to a rune boundary */
+    ime->preedit_cursor = NK_CLAMP(0, cursor, ime->preedit_len);
+    while (ime->preedit_cursor > 0 &&
+        ((unsigned char)ime->preedit[ime->preedit_cursor] & 0xC0) == 0x80)
+        ime->preedit_cursor--;
+
+    ime->composing = (nk_bool)(ime->preedit_len > 0);
+    ime->preedit_dirty = nk_true;
+    if (!ime->composing) {
+        ime->candidate_count = 0;
+        ime->candidate_selected = -1;
+        ime->cursor_rect = nk_rect(0,0,0,0);
+    }
+}
+NK_API void
+nk_input_ime_candidates(struct nk_context *ctx, const char **candidates,
+    int count, int selected)
+{
+    int i;
+    struct nk_ime *ime;
+    NK_ASSERT(ctx);
+    if (!ctx) return;
+    ime = &ctx->ime;
+    if (!ime->enabled) return;
+
+    if (!candidates || count <= 0) {
+        ime->candidate_count = 0;
+        ime->candidate_selected = -1;
+        return;
+    }
+    count = NK_MIN(count, NK_IME_MAX_CANDIDATES);
+    for (i = 0; i < count; ++i) {
+        int len;
+        if (!candidates[i]) {
+            ime->candidates[i].len = 0;
+            ime->candidates[i].text[0] = '\0';
+            continue;
+        }
+        len = nk_ime_truncate_utf8(candidates[i], nk_strlen(candidates[i]),
+            NK_IME_MAX_CANDIDATE_LEN - 1);
+        if (len)
+            NK_MEMCPY(ime->candidates[i].text, candidates[i], (nk_size)len);
+        ime->candidates[i].text[len] = '\0';
+        ime->candidates[i].len = len;
+    }
+    ime->candidate_count = count;
+    ime->candidate_selected = (selected >= 0 && selected < count) ? selected : -1;
+}
+NK_API void
+nk_input_ime_select_candidate(struct nk_context *ctx, int index)
+{
+    struct nk_ime *ime;
+    NK_ASSERT(ctx);
+    if (!ctx) return;
+    ime = &ctx->ime;
+    if (!ime->enabled) return;
+    if (index < 0 || index >= ime->candidate_count) return;
+    if (!ime->candidates[index].len) return;
+    nk_input_ime_commit(ctx, ime->candidates[index].text,
+        ime->candidates[index].len);
+}
+NK_API void
+nk_input_ime_commit(struct nk_context *ctx, const char *text, int len)
+{
+    struct nk_ime *ime;
+    NK_ASSERT(ctx);
+    if (!ctx) return;
+    ime = &ctx->ime;
+    if (!ime->enabled) return;
+
+    ime->commit_len = nk_ime_truncate_utf8(text, len, NK_IME_MAX_COMMIT - 1);
+    if (ime->commit_len)
+        NK_MEMCPY(ime->commit, text, (nk_size)ime->commit_len);
+    ime->commit[ime->commit_len] = '\0';
+    ime->commit_pending = nk_true;
+}
+NK_API void
+nk_input_ime_cancel(struct nk_context *ctx)
+{
+    NK_ASSERT(ctx);
+    if (!ctx) return;
+    if (!ctx->ime.enabled) return;
+    ctx->ime.cancel_pending = nk_true;
+}
 
 
 
@@ -28562,7 +28906,7 @@ NK_LIB nk_flags
 nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
     struct nk_rect bounds, nk_flags flags, nk_plugin_filter filter,
     struct nk_text_edit *edit, const struct nk_style_edit *style,
-    struct nk_input *in, const struct nk_user_font *font)
+    struct nk_input *in, const struct nk_user_font *font, struct nk_ime *ime)
 {
     struct nk_rect area;
     nk_flags ret = 0;
@@ -28620,6 +28964,11 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
     else if (flags & NK_EDIT_ALWAYS_INSERT_MODE)
         edit->mode = NK_TEXT_EDIT_MODE_INSERT;
 
+    /* losing focus while composing cancels the composition and keeps
+     * the already committed text as it is */
+    if (ime && ime->enabled && prev_state && !edit->active)
+        nk_ime_clear_composition(ime);
+
     ret = (edit->active) ? NK_EDIT_ACTIVE: NK_EDIT_INACTIVE;
     if (prev_state != edit->active)
         ret |= (edit->active) ? NK_EDIT_ACTIVATED: NK_EDIT_DEACTIVATED;
@@ -28630,6 +28979,38 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
         int shift_mod = in->keyboard.keys[NK_KEY_SHIFT].down;
         const float mouse_x = (in->mouse.pos.x - area.x) + edit->scrollbar.x;
         const float mouse_y = (in->mouse.pos.y - area.y) + edit->scrollbar.y;
+
+        /* IME commit/cancel events */
+        if (ime && ime->enabled) {
+            if (ime->cancel_pending) {
+                nk_ime_clear_composition(ime);
+                ime->cancel_pending = nk_false;
+            }
+            if (ime->commit_pending) {
+                /* insert like regular typed text so filter, undo stack,
+                 * cursor and scrolling are all updated; if insertion
+                 * fails (e.g. fixed buffer is full) the text is left
+                 * unchanged and the composition is simply cleared */
+                nk_bool fits = nk_true;
+                if (ime->commit_len &&
+                    edit->string.buffer.type == NK_BUFFER_FIXED) {
+                    nk_size free_space = edit->string.buffer.memory.size -
+                        edit->string.buffer.allocated;
+                    if ((nk_size)ime->commit_len > free_space)
+                        fits = nk_false;
+                }
+                if (fits && ime->commit_len)
+                    nk_textedit_text(edit, ime->commit, ime->commit_len);
+                nk_ime_clear_composition(ime);
+                ime->commit_pending = nk_false;
+                ime->commit_len = 0;
+                cursor_follow = nk_true;
+            }
+            if (ime->preedit_dirty) {
+                ime->preedit_dirty = nk_false;
+                cursor_follow = nk_true;
+            }
+        }
 
         /* mouse click handler */
         is_hovered = (char)nk_input_is_mouse_hovering_rect(in, area);
@@ -28757,6 +29138,8 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
     {
         int total_lines = 1;
         struct nk_vec2 text_size = nk_vec2(0,0);
+        int ime_composing;
+        float preedit_w = 0.0f;
 
         /* text pointer positions */
         const char *cursor_ptr = 0;
@@ -28871,6 +29254,12 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
                 cursor_pos.y = text_size.y - row_height;
             }
         }
+        /* IME composition (preedit) string state for this frame */
+        ime_composing = (ime && ime->enabled && ime->composing &&
+            ime->preedit_len > 0);
+        if (ime_composing)
+            preedit_w = font->width(font->userdata, font->height,
+                ime->preedit, ime->preedit_len);
         {
             /* scrollbar */
             if (cursor_follow)
@@ -28879,10 +29268,11 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
                 if (!(flags & NK_EDIT_NO_HORIZONTAL_SCROLL)) {
                     /* horizontal scroll */
                     const float scroll_increment = area.w * 0.25f;
-                    if (cursor_pos.x < edit->scrollbar.x)
-                        edit->scrollbar.x = (float)(int)NK_MAX(0.0f, cursor_pos.x - scroll_increment);
-                    if (cursor_pos.x >= edit->scrollbar.x + area.w)
-                        edit->scrollbar.x = (float)(int)NK_MAX(0.0f, cursor_pos.x - area.w + scroll_increment);
+                    const float follow_x = cursor_pos.x + preedit_w;
+                    if (follow_x < edit->scrollbar.x)
+                        edit->scrollbar.x = (float)(int)NK_MAX(0.0f, follow_x - scroll_increment);
+                    if (follow_x >= edit->scrollbar.x + area.w)
+                        edit->scrollbar.x = (float)(int)NK_MAX(0.0f, follow_x - area.w + scroll_increment);
                 } else edit->scrollbar.x = 0;
 
                 if (flags & NK_EDIT_MULTILINE) {
@@ -28965,7 +29355,65 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
         cursor_color = nk_rgb_factor(cursor_color, style->color_factor);
         cursor_text_color = nk_rgb_factor(cursor_text_color, style->color_factor);
 
-        if (edit->select_start == edit->select_end) {
+        if (ime_composing) {
+            /* draw the committed text and the IME composition (preedit)
+             * string separately: committed text before the cursor, then
+             * the underlined preedit string, then the remaining committed
+             * text shifted by the preedit width */
+            int cursor_bytes = (cursor_ptr) ? (int)(cursor_ptr - text) : len;
+            float preedit_x = area.x + cursor_pos.x - edit->scrollbar.x;
+            float preedit_y = area.y + cursor_pos.y - edit->scrollbar.y;
+
+            if (cursor_bytes > 0)
+                nk_edit_draw_text(out, style, area.x - edit->scrollbar.x,
+                    area.y - edit->scrollbar.y, 0, text, cursor_bytes,
+                    row_height, font, background_color, text_color, nk_false);
+
+            /* preedit string with underline and composition cursor */
+            {struct nk_rect label;
+            struct nk_rect underline;
+            struct nk_rect comp_cursor;
+            struct nk_text txt;
+            float comp_cursor_x;
+
+            label.x = preedit_x;
+            label.y = preedit_y;
+            label.w = preedit_w;
+            label.h = row_height;
+            txt.padding = nk_vec2(0,0);
+            txt.background = background_color;
+            txt.text = text_color;
+            nk_widget_text(out, label, ime->preedit, ime->preedit_len,
+                &txt, NK_TEXT_LEFT, font);
+
+            underline.x = preedit_x;
+            underline.y = preedit_y + font->height - 1.0f;
+            underline.w = preedit_w;
+            underline.h = 1.0f;
+            nk_fill_rect(out, underline, 0, cursor_color);
+
+            comp_cursor_x = preedit_x;
+            if (ime->preedit_cursor > 0)
+                comp_cursor_x += font->width(font->userdata, font->height,
+                    ime->preedit, ime->preedit_cursor);
+            comp_cursor.w = style->cursor_size;
+            comp_cursor.h = font->height;
+            comp_cursor.x = comp_cursor_x;
+            comp_cursor.y = preedit_y + row_height/2.0f - comp_cursor.h/2.0f;
+            nk_fill_rect(out, comp_cursor, 0, cursor_color);}
+
+            /* remaining committed text after the cursor */
+            if (len - cursor_bytes > 0)
+                nk_edit_draw_text(out, style, area.x - edit->scrollbar.x,
+                    area.y + cursor_pos.y - edit->scrollbar.y,
+                    cursor_pos.x + preedit_w, text + cursor_bytes,
+                    len - cursor_bytes, row_height, font,
+                    background_color, text_color, nk_false);
+
+            /* expose composition position for the platform candidate window */
+            ime->cursor_rect = nk_rect(preedit_x, preedit_y,
+                preedit_w, row_height);
+        } else if (edit->select_start == edit->select_end) {
             /* no selection so just draw the complete text */
             const char *begin = nk_str_get_const(&edit->string);
             int l = nk_str_len_char(&edit->string);
@@ -29014,7 +29462,7 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
         }
 
         /* cursor */
-        if (edit->select_start == edit->select_end)
+        if (!ime_composing && edit->select_start == edit->select_end)
         {
             if (edit->cursor >= nk_str_len(&edit->string) ||
                 (cursor_ptr && *cursor_ptr == '\n')) {
@@ -29094,6 +29542,10 @@ nk_edit_focus(struct nk_context *ctx, nk_flags flags)
 
     win = ctx->current;
     hash = win->edit.seq;
+    /* moving keyboard focus to another edit widget cancels any
+     * ongoing composition without touching the text */
+    if (ctx->ime.enabled && win->edit.active && win->edit.name != hash)
+        nk_ime_clear_composition(&ctx->ime);
     win->edit.active = nk_true;
     win->edit.name = hash;
     if (flags & NK_EDIT_ALWAYS_INSERT_MODE)
@@ -29110,6 +29562,8 @@ nk_edit_unfocus(struct nk_context *ctx)
     win = ctx->current;
     win->edit.active = nk_false;
     win->edit.name = 0;
+    if (ctx->ime.enabled)
+        nk_ime_clear_composition(&ctx->ime);
 }
 NK_API nk_flags
 nk_edit_string(struct nk_context *ctx, nk_flags flags,
@@ -29217,7 +29671,7 @@ nk_edit_buffer(struct nk_context *ctx, nk_flags flags,
     prev_state = (unsigned char)edit->active;
     in = (flags & NK_EDIT_READ_ONLY) ? 0: in;
     ret_flags = nk_do_edit(&ctx->last_widget_state, &win->buffer, bounds, flags,
-                    filter, edit, &style->edit, in, style->font);
+                    filter, edit, &style->edit, in, style->font, &ctx->ime);
 
     if (ctx->last_widget_state & NK_WIDGET_STATE_HOVER)
         ctx->style.cursor_active = ctx->style.cursors[NK_CURSOR_TEXT];
@@ -29522,7 +29976,7 @@ nk_do_property(nk_flags *ws,
     text_edit->string.buffer.size = NK_MAX_NUMBER_BUFFER;
     text_edit->mode = NK_TEXT_EDIT_MODE_INSERT;
     nk_do_edit(ws, out, edit, (int)NK_EDIT_FIELD|(int)NK_EDIT_AUTO_SELECT,
-        filters[filter], text_edit, &style->edit, (*state == NK_PROPERTY_EDIT) ? in: 0, font);
+        filters[filter], text_edit, &style->edit, (*state == NK_PROPERTY_EDIT) ? in: 0, font, 0);
 
     *length = text_edit->string.len;
     *cursor = text_edit->cursor;
@@ -29781,7 +30235,6 @@ nk_propertyd(struct nk_context *ctx, const char *name, double min,
     val = variant.value.d;
     return val;
 }
-
 
 
 

@@ -155,7 +155,7 @@ NK_LIB nk_flags
 nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
     struct nk_rect bounds, nk_flags flags, nk_plugin_filter filter,
     struct nk_text_edit *edit, const struct nk_style_edit *style,
-    struct nk_input *in, const struct nk_user_font *font)
+    struct nk_input *in, const struct nk_user_font *font, struct nk_ime *ime)
 {
     struct nk_rect area;
     nk_flags ret = 0;
@@ -213,6 +213,11 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
     else if (flags & NK_EDIT_ALWAYS_INSERT_MODE)
         edit->mode = NK_TEXT_EDIT_MODE_INSERT;
 
+    /* losing focus while composing cancels the composition and keeps
+     * the already committed text as it is */
+    if (ime && ime->enabled && prev_state && !edit->active)
+        nk_ime_clear_composition(ime);
+
     ret = (edit->active) ? NK_EDIT_ACTIVE: NK_EDIT_INACTIVE;
     if (prev_state != edit->active)
         ret |= (edit->active) ? NK_EDIT_ACTIVATED: NK_EDIT_DEACTIVATED;
@@ -223,6 +228,38 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
         int shift_mod = in->keyboard.keys[NK_KEY_SHIFT].down;
         const float mouse_x = (in->mouse.pos.x - area.x) + edit->scrollbar.x;
         const float mouse_y = (in->mouse.pos.y - area.y) + edit->scrollbar.y;
+
+        /* IME commit/cancel events */
+        if (ime && ime->enabled) {
+            if (ime->cancel_pending) {
+                nk_ime_clear_composition(ime);
+                ime->cancel_pending = nk_false;
+            }
+            if (ime->commit_pending) {
+                /* insert like regular typed text so filter, undo stack,
+                 * cursor and scrolling are all updated; if insertion
+                 * fails (e.g. fixed buffer is full) the text is left
+                 * unchanged and the composition is simply cleared */
+                nk_bool fits = nk_true;
+                if (ime->commit_len &&
+                    edit->string.buffer.type == NK_BUFFER_FIXED) {
+                    nk_size free_space = edit->string.buffer.memory.size -
+                        edit->string.buffer.allocated;
+                    if ((nk_size)ime->commit_len > free_space)
+                        fits = nk_false;
+                }
+                if (fits && ime->commit_len)
+                    nk_textedit_text(edit, ime->commit, ime->commit_len);
+                nk_ime_clear_composition(ime);
+                ime->commit_pending = nk_false;
+                ime->commit_len = 0;
+                cursor_follow = nk_true;
+            }
+            if (ime->preedit_dirty) {
+                ime->preedit_dirty = nk_false;
+                cursor_follow = nk_true;
+            }
+        }
 
         /* mouse click handler */
         is_hovered = (char)nk_input_is_mouse_hovering_rect(in, area);
@@ -350,6 +387,8 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
     {
         int total_lines = 1;
         struct nk_vec2 text_size = nk_vec2(0,0);
+        int ime_composing;
+        float preedit_w = 0.0f;
 
         /* text pointer positions */
         const char *cursor_ptr = 0;
@@ -464,6 +503,12 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
                 cursor_pos.y = text_size.y - row_height;
             }
         }
+        /* IME composition (preedit) string state for this frame */
+        ime_composing = (ime && ime->enabled && ime->composing &&
+            ime->preedit_len > 0);
+        if (ime_composing)
+            preedit_w = font->width(font->userdata, font->height,
+                ime->preedit, ime->preedit_len);
         {
             /* scrollbar */
             if (cursor_follow)
@@ -472,10 +517,11 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
                 if (!(flags & NK_EDIT_NO_HORIZONTAL_SCROLL)) {
                     /* horizontal scroll */
                     const float scroll_increment = area.w * 0.25f;
-                    if (cursor_pos.x < edit->scrollbar.x)
-                        edit->scrollbar.x = (float)(int)NK_MAX(0.0f, cursor_pos.x - scroll_increment);
-                    if (cursor_pos.x >= edit->scrollbar.x + area.w)
-                        edit->scrollbar.x = (float)(int)NK_MAX(0.0f, cursor_pos.x - area.w + scroll_increment);
+                    const float follow_x = cursor_pos.x + preedit_w;
+                    if (follow_x < edit->scrollbar.x)
+                        edit->scrollbar.x = (float)(int)NK_MAX(0.0f, follow_x - scroll_increment);
+                    if (follow_x >= edit->scrollbar.x + area.w)
+                        edit->scrollbar.x = (float)(int)NK_MAX(0.0f, follow_x - area.w + scroll_increment);
                 } else edit->scrollbar.x = 0;
 
                 if (flags & NK_EDIT_MULTILINE) {
@@ -558,7 +604,65 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
         cursor_color = nk_rgb_factor(cursor_color, style->color_factor);
         cursor_text_color = nk_rgb_factor(cursor_text_color, style->color_factor);
 
-        if (edit->select_start == edit->select_end) {
+        if (ime_composing) {
+            /* draw the committed text and the IME composition (preedit)
+             * string separately: committed text before the cursor, then
+             * the underlined preedit string, then the remaining committed
+             * text shifted by the preedit width */
+            int cursor_bytes = (cursor_ptr) ? (int)(cursor_ptr - text) : len;
+            float preedit_x = area.x + cursor_pos.x - edit->scrollbar.x;
+            float preedit_y = area.y + cursor_pos.y - edit->scrollbar.y;
+
+            if (cursor_bytes > 0)
+                nk_edit_draw_text(out, style, area.x - edit->scrollbar.x,
+                    area.y - edit->scrollbar.y, 0, text, cursor_bytes,
+                    row_height, font, background_color, text_color, nk_false);
+
+            /* preedit string with underline and composition cursor */
+            {struct nk_rect label;
+            struct nk_rect underline;
+            struct nk_rect comp_cursor;
+            struct nk_text txt;
+            float comp_cursor_x;
+
+            label.x = preedit_x;
+            label.y = preedit_y;
+            label.w = preedit_w;
+            label.h = row_height;
+            txt.padding = nk_vec2(0,0);
+            txt.background = background_color;
+            txt.text = text_color;
+            nk_widget_text(out, label, ime->preedit, ime->preedit_len,
+                &txt, NK_TEXT_LEFT, font);
+
+            underline.x = preedit_x;
+            underline.y = preedit_y + font->height - 1.0f;
+            underline.w = preedit_w;
+            underline.h = 1.0f;
+            nk_fill_rect(out, underline, 0, cursor_color);
+
+            comp_cursor_x = preedit_x;
+            if (ime->preedit_cursor > 0)
+                comp_cursor_x += font->width(font->userdata, font->height,
+                    ime->preedit, ime->preedit_cursor);
+            comp_cursor.w = style->cursor_size;
+            comp_cursor.h = font->height;
+            comp_cursor.x = comp_cursor_x;
+            comp_cursor.y = preedit_y + row_height/2.0f - comp_cursor.h/2.0f;
+            nk_fill_rect(out, comp_cursor, 0, cursor_color);}
+
+            /* remaining committed text after the cursor */
+            if (len - cursor_bytes > 0)
+                nk_edit_draw_text(out, style, area.x - edit->scrollbar.x,
+                    area.y + cursor_pos.y - edit->scrollbar.y,
+                    cursor_pos.x + preedit_w, text + cursor_bytes,
+                    len - cursor_bytes, row_height, font,
+                    background_color, text_color, nk_false);
+
+            /* expose composition position for the platform candidate window */
+            ime->cursor_rect = nk_rect(preedit_x, preedit_y,
+                preedit_w, row_height);
+        } else if (edit->select_start == edit->select_end) {
             /* no selection so just draw the complete text */
             const char *begin = nk_str_get_const(&edit->string);
             int l = nk_str_len_char(&edit->string);
@@ -607,7 +711,7 @@ nk_do_edit(nk_flags *state, struct nk_command_buffer *out,
         }
 
         /* cursor */
-        if (edit->select_start == edit->select_end)
+        if (!ime_composing && edit->select_start == edit->select_end)
         {
             if (edit->cursor >= nk_str_len(&edit->string) ||
                 (cursor_ptr && *cursor_ptr == '\n')) {
@@ -687,6 +791,10 @@ nk_edit_focus(struct nk_context *ctx, nk_flags flags)
 
     win = ctx->current;
     hash = win->edit.seq;
+    /* moving keyboard focus to another edit widget cancels any
+     * ongoing composition without touching the text */
+    if (ctx->ime.enabled && win->edit.active && win->edit.name != hash)
+        nk_ime_clear_composition(&ctx->ime);
     win->edit.active = nk_true;
     win->edit.name = hash;
     if (flags & NK_EDIT_ALWAYS_INSERT_MODE)
@@ -703,6 +811,8 @@ nk_edit_unfocus(struct nk_context *ctx)
     win = ctx->current;
     win->edit.active = nk_false;
     win->edit.name = 0;
+    if (ctx->ime.enabled)
+        nk_ime_clear_composition(&ctx->ime);
 }
 NK_API nk_flags
 nk_edit_string(struct nk_context *ctx, nk_flags flags,
@@ -810,7 +920,7 @@ nk_edit_buffer(struct nk_context *ctx, nk_flags flags,
     prev_state = (unsigned char)edit->active;
     in = (flags & NK_EDIT_READ_ONLY) ? 0: in;
     ret_flags = nk_do_edit(&ctx->last_widget_state, &win->buffer, bounds, flags,
-                    filter, edit, &style->edit, in, style->font);
+                    filter, edit, &style->edit, in, style->font, &ctx->ime);
 
     if (ctx->last_widget_state & NK_WIDGET_STATE_HOVER)
         ctx->style.cursor_active = ctx->style.cursors[NK_CURSOR_TEXT];
